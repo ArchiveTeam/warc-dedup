@@ -20,7 +20,6 @@ class Warc:
                 open(self._warc_target, 'wb') as t:
             writer = WARCWriter(filebuf=t, gzip=self._warc_target.endswith('.gz'))
             for record in ArchiveIterator(s):
-                print(type(record))
                 url = record.rec_headers.get_header('WARC-Target-URI')
                 if url is not None and url.startswith('<'):
                     url = re.search('^<(.+)>$', url).group(1)
@@ -89,7 +88,7 @@ class Warc:
         date = date.strftime('%Y%m%d%H%M%S')
         digest = record.rec_headers.get_header('WARC-Payload-Digest')
         uri = record.rec_headers.get_header('WARC-Target-URI')
-        r = requests.get('https://web.archive.org/cdx/search/cdx'
+        r = requests.get('http://wwwb-dedup.us.archive.org:8083/cdx/search'
                          '?url={}'.format(uri) + 
                          '&limit=1'
                          '&filter=digest:{}'.format(digest.split(':')[1]) + 
