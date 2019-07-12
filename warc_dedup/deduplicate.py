@@ -1,12 +1,13 @@
 import datetime
 import os
+import re
+import urllib.parse
 
-import requests
-import warcio
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 
 from warc_dedup.log import Log
+from warc_dedup.utils import get
 
 
 class Warc:
@@ -36,14 +37,22 @@ class Warc:
                                   .format(record_id, url))
                     record.rec_headers.replace_header('WARC-Target-URI', url)
                 if record.rec_headers.get_header('WARC-Type') == 'response':
+                    self._log.log('Deduplicating record {}.'.format(record_id))
                     data = self.get_duplicate(record)
+                    print(data)
                     if data:
-                        self._log.log('Record {} is duplicate from {}.'
+                        self._log.log('Record {} is a duplicate from {}.'
                                       .format(record_id, data))
                         writer.write_record(
                             self.response_to_revisit(writer, record, data)
                         )
                     else:
+                        if data is False:
+                            self._log.log('Record {} could not be deduplicated.'
+                                .format(record_id))
+                        else:
+                            self._log.log('Record {} is not a duplicate.'
+                                .format(record_id))
                         self.register_response(record)
                         writer.write_record(record)
                 elif record.rec_headers.get_header('WARC-Type') == 'warcinfo':
@@ -97,29 +106,51 @@ class Warc:
             return self._response_records[key]
         return self.get_ia_duplicate(record)
 
-    @staticmethod
-    def get_ia_duplicate(record):
+    def get_ia_duplicate(self, record):
         date = record.rec_headers.get_header('WARC-Date')
         date = datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
         date = date.strftime('%Y%m%d%H%M%S')
         digest = record.rec_headers.get_header('WARC-Payload-Digest')
         uri = record.rec_headers.get_header('WARC-Target-URI')
-        r = requests.get(
+        record_id = record.rec_headers.get_header('WARC-Record-ID')
+        success, response = get(
             'http://wwwb-dedup.us.archive.org:8083/cdx/search'
-            '?url={}'.format(uri) +
-            '&limit=1'
+            '?url={}'.format(urllib.parse.quote(uri)) +
+            '&limit=100'
             '&filter=digest:{}'.format(digest.split(':')[1]) +
-            '&fl=original,timestamp'
+            '&fl=timestamp,original'
             '&to={}'.format(int(date) - 1) +
-            '&filter=!mimetype:warc\/revisit'
+            '&filter=!mimetype:warc\/revisit',
+            sleep_time=1,
+            max_tries=10,
+            timeout=10
         )
-        r = r.text.strip()
-        if len(r) == 0:
+        self._log.log('Requested URL {}.'.format(response.url))
+        if len(response.text.strip()) == 0:
             return None
-        r = r.split(' ', 1)
+        if 'org.archive.wayback.exception.RobotAccessControlException' in response.text:
+            self._log.log('Record {} is blocked by robots.txt.'.format(record_id))
+            return False
+        if 'org.archive.wayback.exception.AdministrativeAccessControlException' in response.text:
+            self._log.log('Record {} is excluded from the CDX API.'.format(record_id))
+            return False
+        if 'Requested Line is too large' in response.text:
+            self._log.log('Record {} has a too large URL.'.format(record_id))
+            return False
+        if not success:
+            self._log.log('Record {} got a bad CDX API response.'.format(record_id))
+            return False
+        for line in response.text.splitlines():
+            if not re.search('^[0-9]{14}\s+https?://', line):
+                continue
+            break
+        else:
+            self._log.log('Record {} for an invalid CDX API response'.format(record_id))
+            return False
+        data = line.strip().split(' ', 1)
         return {
-            'target-uri': r[0],
-            'date': datetime.datetime.strptime(r[1], '%Y%m%d%H%M%S'). \
+            'target-uri': data[1],
+            'date': datetime.datetime.strptime(data[0], '%Y%m%d%H%M%S'). \
                 strftime('%Y-%m-%dT%H:%M:%SZ')
         }
 
@@ -132,7 +163,6 @@ class Warc:
         if value is not None:
             self._warc_target = value
         self._warc_target = create_warc_target(self.warc_source)
-        
 
 
 def create_warc_target(warc_source: str) -> str:

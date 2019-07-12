@@ -12,6 +12,7 @@ class Log:
         for line in value.splitlines():
             line = line.strip()
             self._log.append((date, line))
+            print(self._log[-1])
 
     def create_record(self, writer):
         payload = '\n'.join(['{} {}'.format(t.strftime('%Y-%m-%d %H:%M:%S.%f'),
